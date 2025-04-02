@@ -1,0 +1,153 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+    provider = "prisma-client-js"
+}
+
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+// Enum definitions for status tracking
+enum JobStatus {
+    PENDING
+    RUNNING
+    COMPLETED
+    FAILED
+    CANCELLED
+}
+
+enum JobType {
+    PREPROCESSING
+    KMER_COUNTING
+    MODEL_TRAINING
+    KMER_ANALYSIS
+    // Add other job types as needed
+}
+
+// Core Project and Data Management Models
+model Project {
+    id          String    @id @default(cuid())
+    name        String
+    description String?
+    createdAt   DateTime  @default(now())
+    updatedAt   DateTime  @updatedAt
+    datasets    Dataset[]
+}
+
+model Dataset {
+    id                  String    @id @default(cuid())
+    name                String
+    description         String?
+    projectId           String
+    project             Project   @relation(fields: [projectId], references: [id])
+    createdAt           DateTime  @default(now())
+    updatedAt           DateTime  @updatedAt
+    isRaw               Boolean   @default(true) // Indicates if it's raw PATRIC metadata or processed
+    rawMetadataPath     String?   // Path to raw metadata file (e.g., in Supabase storage)
+    genomeIds           String[]  // List of PATRIC genome IDs included in this dataset
+    processedLabels     ProcessedLabel[]
+    kmerMatrices        KmerMatrix[]
+    kmerAnalysisJobs    KmerAnalysisJob[]
+    trainingJobsAsInput TrainingJob[]       @relation("TrainingInputDataset")
+}
+
+model Genome {
+    id                      String    @id @default(cuid()) // Internal ID
+    genomeIdPatric          String    @unique // PATRIC's genome ID
+    genomeName              String
+    fnaPath                 String?   // Path to the .fna file in storage
+    downloadedAt            DateTime? @default(now())
+    lastCheckedAt           DateTime? @updatedAt
+    processedPhenotypes     ProcessedLabel[]
+}
+
+// Model for Processed Phenotype Labels after MIC standardization
+model ProcessedLabel {
+    id                   String    @id @default(cuid())
+    datasetId            String
+    dataset              Dataset   @relation(fields: [datasetId], references: [id])
+    genomeId             String
+    genome               Genome    @relation(fields: [genomeId], references: [id])
+    antibiotic           String
+    resistantPhenotype   String // 'Resistant', 'Susceptible', 'Intermediate'
+    measurementValue     Float?
+    measurementUnit      String?
+    measurementSign      String?
+    testingStandard      String?
+    testingStandardYear  Int?
+    createdAt            DateTime  @default(now())
+    @@unique([datasetId, genomeId, antibiotic]) // Ensure unique label per genome/antibiotic within a dataset
+}
+
+// Model for K-mer Matrices
+model KmerMatrix {
+    id              String        @id @default(cuid())
+    datasetId       String
+    dataset         Dataset       @relation(fields: [datasetId], references: [id])
+    kmerSize        Int
+    matrixPath      String        // Path to the k-mer count matrix (e.g., .npz, .h5) in storage
+    featureListPath String        // Path to the list of k-mer features in storage
+    createdAt       DateTime      @default(now())
+    trainingJobs    TrainingJob[] @relation("TrainingKmerMatrix")
+}
+
+// Job Tracking Models
+model TrainingJob {
+    id              String            @id @default(cuid())
+    jobType         JobType           @default(MODEL_TRAINING)
+    status          JobStatus         @default(PENDING)
+    createdAt       DateTime          @default(now())
+    startedAt       DateTime?
+    completedAt     DateTime?
+    errorMessage    String?
+    inputDatasetId  String
+    inputDataset    Dataset           @relation("TrainingInputDataset", fields: [inputDatasetId], references: [id])
+    kmerMatrixId    String
+    kmerMatrix      KmerMatrix        @relation("TrainingKmerMatrix", fields: [kmerMatrixId], references: [id])
+    modelType       String            // e.g., 'LogisticRegression', 'RandomForest', 'XGBoost'
+    hyperparameters Json?             // Store hyperparameters used for the job
+    targetAntibiotics String[]          // List of antibiotics targeted in this job
+    outputModel     Model?            // Relation to the trained model
+}
+
+model Model {
+    id                String            @id @default(cuid())
+    trainingJobId     String            @unique
+    trainingJob       TrainingJob       @relation(fields: [trainingJobId], references: [id])
+    modelPath         String            // Path to the saved model file in storage
+    modelType         String
+    createdAt         DateTime          @default(now())
+    evaluationResults EvaluationResult[]
+    kmerAnalysisJobs  KmerAnalysisJob[]
+}
+
+model EvaluationResult {
+    id               String    @id @default(cuid())
+    modelId          String
+    model            Model     @relation(fields: [modelId], references: [id])
+    antibiotic       String
+    metricName       String    // e.g., 'Accuracy', 'Precision', 'Recall', 'F1', 'AUC'
+    metricValue      Float
+    evaluationSet    String    // e.g., 'Training', 'Validation', 'Test'
+    confusionMatrix  Json?     // Store confusion matrix elements
+    createdAt        DateTime  @default(now())
+    @@unique([modelId, antibiotic, metricName, evaluationSet])
+}
+
+// K-mer Analysis Job (Placeholder for now)
+model KmerAnalysisJob {
+    id             String    @id @default(cuid())
+    jobType        JobType   @default(KMER_ANALYSIS)
+    status         JobStatus @default(PENDING)
+    createdAt      DateTime  @default(now())
+    completedAt    DateTime?
+    errorMessage   String?
+    inputDatasetId String
+    dataset        Dataset   @relation(fields: [inputDatasetId], references: [id])
+    inputModelId   String?
+    model          Model?    @relation(fields: [inputModelId], references: [id]) // Optional: analysis might be model-specific
+    resultsPath    String?   // Path to analysis results (e.g., important k-mers, gene mappings) in storage
+}
